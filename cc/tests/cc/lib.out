@@ -1,0 +1,18 @@
+[line 1 of OUT.TXT][line 2 of OUT.TXT][line 3 of OUT.TXT][last] 4 lines
+digits 6
+remove 0 1
+sp--7-ff-123456789 18
+atoi -123 45 2000000000 9 70000
+ctype Aq5 1110
+malloc heap one, heap two 1
+reuse 1
+joined 1
+calloc 0
+big 1
+args 4 A C
+rand 1
+bank W
+fwrite 10 W
+fread 15 abcdefghijklmnopqrst0123456789 W -1
+W
+%|   ab|z  |xy|65535

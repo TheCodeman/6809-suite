@@ -1,0 +1,19 @@
+--- a/link.asm
++++ b/link.asm
+@@ -859,13 +859,15 @@
+             puls    b,y
+             bne     sy3
+             inc     tmp4
++            pshs    b               ; the count: D is needed below
+             ldd     tmpw
+             addd    SI_SIZE,y
+             std     tmpw
+             ldd     SI_ADDR,y
+             cmpd    tmpv
+-            bhs     sy3
++            bhs     sy2
+             std     tmpv
++sy2:        puls    b
+ sy3:        leay    SISZ,y
+             decb
+             bne     sy1

@@ -1,0 +1,8 @@
+20 16 7 16
+macro string 1 1 EMPTY
+-20
+chars 10 0 92 65 65
+tab[	] q["] '
+concat strings
+if-macro ok
+line 46

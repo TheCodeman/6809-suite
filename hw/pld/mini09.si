@@ -1,0 +1,40 @@
+Name       MINI09;
+PartNo     U5;
+Date       10/20/26;
+Revision   01;
+Designer   MINI09;
+Company    MINI09;
+Assembly   MINI09 6309 SBC rev D;
+Location   U5;
+Device     v750c;
+
+ORDER: OSC, %1, MRDY, %1, RESETN, %1, A15, A14, A13, %1, RW, %3,
+       E, Q, %2, RD, WR, %2, RAMCS, DUARTCS, ROMCS, %2, DRESET;
+
+VECTORS:
+/* free run: watch E and Q for two full cycles */
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+/* MRDY low for three clocks */
+C 0 1 000 1   ** ** *** *
+C 0 1 000 1   ** ** *** *
+C 0 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+C 1 1 000 1   ** ** *** *
+/* address decode and strobes (no clock): RAM, DUART, ROM, read and write */
+0 1 1 000 1   ** ** *** *
+0 1 1 101 1   ** ** *** *
+0 1 1 110 1   ** ** *** *
+0 1 1 111 1   ** ** *** *
+0 1 1 111 0   ** ** *** *
+/* reset */
+0 1 0 000 1   ** ** *** *

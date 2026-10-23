@@ -1,0 +1,19 @@
+swap 2 1
+pp 42 42
+grid 12 23 10 21
+ptrarith 21 12 5
+ptrinc 13
+cmp 1 1
+rect 13 4 24 box 16
+copy 5 1 box
+arrow 1 o
+mid 7 3
+union 12 34 2
+enum 0 5 6
+zero one two 9 t
+fptr 5 9 7 -2
+list 10
+long* 1 -2 70000
+upper HI THERE 8
+str b 5
+scan  there

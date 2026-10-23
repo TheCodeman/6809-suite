@@ -1,0 +1,12 @@
+help
+ps
+count
+count
+spin
+ps
+d e000
+w 1000 41 42 43
+d 1000
+k 4
+bogus
+L

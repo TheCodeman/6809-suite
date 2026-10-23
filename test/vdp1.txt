@@ -1,0 +1,4 @@
+VDP
+BEEP
+CLS
+L

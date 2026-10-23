@@ -1,0 +1,29 @@
+add 1178 sub 1290 mul -3568 div -22 mod 2
+neg -1234 not 0 cpl -1235
+and 208 or 1235 xor 1159 shl 9872 shr -14
+rel 0 1 1 0 1 1
+log 1 0 1 0
+u 50007 7142 6 3125 18928
+urel 1 1
+char -100 250 150 4
+globals 7 40000 -3 200 100000 3000000000
+long 122667 124245 -97406784 -156 372
+long2 1975296 -99 -123456 10040
+lrel 1 0 1 0
+ulong 1333333333 0 15625000
+widen 1234 -56 50000
+narrow 1234 4464
+15 12 48 9 3 48 24 25 24 231
+lasg 42859
+inc 7 5 7
+dec 5 7 5
+linc 65536
+cond 10 20
+call 81 1000000
+comma 7
+arr 3 7
+sizeof 1 2 4 10 2
+hex beef BEEF 10 00001234
+   42|42   |-0042|str|     right|left  |Z
+const 23 11 1024
+1

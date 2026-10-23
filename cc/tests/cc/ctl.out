@@ -1,0 +1,15 @@
+for 25 8
+while 105 7
+do 5
+do1 6
+01 02 10 12 20 21 
+switch 100 200 200 300 7 -1
+fall 542
+goto 5
+fact 5040
+static 4
+andcond 4 6
+else ok
+dangling ok
+inner 99
+outer 3

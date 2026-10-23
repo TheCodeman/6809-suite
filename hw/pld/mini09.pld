@@ -1,0 +1,157 @@
+Name       MINI09;
+PartNo     U5;
+Date       10/20/26;
+Revision   08;
+Designer   MINI09;
+Company    MINI09;
+Assembly   MINI09 6309 SBC rev L;
+Location   U5;
+Device     v750c;
+
+/*
+ * MINI09 glue logic in one ATF750C:
+ *   - E/Q clock generator for the HD63C09E (14.7546 MHz / 4 = 3.6887 MHz,
+ *     Q leads E by 90 deg) with MRDY clock stretching and automatic wait
+ *     states: DUART 2, ROM 1, /EXPCS1 1
+ *   - address decoding: RAM $0000-$BFFF, DUART $C000-$C7FF,
+ *     expansion /EXPCS1 $C800-$CFFF, ROM $E000-$FFFF
+ *   - ROM bank: with PG3 set (a write to $D803 with D4 = 1) the
+ *     $8000-$BFFF window shows the ROM's first 16K instead of RAM (a
+ *     28C256: the CPU's A14..A13 go straight to the ROM, so $8000-$BFFF
+ *     is ROM $0000-$3FFF and $E000-$FFFF is ROM $6000-$7FFF)
+ *   - /MMUWR: write strobe for the 74HC670 page registers at $D800-$D803
+ *   - page bit 4: four buried registers (one per 16K window) loaded from D4
+ *     on the same writes; MA18 outputs the one selected by A15..A14
+ *   - /RD and /WR strobes, qualified by E
+ *   (the SCN2681's active-high reset now comes straight from the DS1232)
+ */
+
+/** Inputs **/
+Pin 1  = OSC;       /* 14.7546 MHz oscillator: E/Q counter, wait states   */
+Pin 2  = A15;
+Pin 3  = A14;
+Pin 4  = A13;
+Pin 5  = RW;        /* CPU R/W, high = read                               */
+Pin 6  = MRDY;      /* memory ready, active high, R4 pull-up, J4         */
+Pin 7  = A0;        /* page register select (with A1)                     */
+Pin 8  = A12;
+Pin 9  = A11;
+Pin 10 = A1;
+Pin 11 = D4;        /* page bit 4                                         */
+/* pin 13 is a spare input, tied to GND on the board                      */
+
+/** Outputs **/
+Pin 23 = Q;         /* CPU Q clock                                        */
+Pin 22 = E;         /* CPU E clock                                        */
+Pin 21 = !RD;       /* RAM /OE, ROM /OE, DUART /RDN                       */
+Pin 20 = !WR;       /* RAM /WE, DUART /WRN                                */
+Pin 19 = !ROMCS;
+Pin 18 = !RAMCS;
+Pin 17 = !DUARTCS;
+Pin 16 = !MMUWR;    /* U7 74HC670 /GW: page registers $D800-$D803 (write) */
+Pin 15 = !EXPCS1;   /* expansion header J4 pin 33, $C800-$CFFF            */
+Pin 14 = MA18;      /* SRAM A18: page bit 4 of the selected window        */
+
+/* Buried registers: page bit 4 for windows $0000, $4000, $8000, and for
+   the $C000 window (never RAM) the ROM bank switch PG3 */
+Pinnode 25 = PG0;
+Pinnode 26 = PG1;
+Pinnode 27 = PG2;
+Pinnode 28 = PG3;
+
+/* Buried wait-state counter */
+Pinnode 29 = W0;
+Pinnode 30 = W1;
+
+/*
+ * E/Q: two-stage Johnson counter on the pin-1 clock, 4 states per cycle:
+ * OSC/4 = 3.6887 MHz, Q leads E by 90 deg.  States (E,Q):
+ *   00 -> 01 -> 11 -> 10 -> 00
+ * Holding in 10 (E high, Q low) stretches the cycle by one OSC period
+ * (68 ns) per clock.  It holds while MRDY is low, and for wait states:
+ *   DUART   2  (E high 271 ns: the 2681 needs >= 225 ns strobes)
+ *   ROM     1  (E high 203 ns: 150 ns 28C64)
+ *   /EXPCS1 1  (Pico card: read data at Q + 170 ns)
+ * W1..W0 counts the OSC periods held so far; it clears outside state 10.
+ */
+DUARTA  = A15 & A14 & !A13 & !A12 & !A11;
+SLOWA   = A15 & A14 & A13                       /* ROM                   */
+        # A15 & !A14 & PG3                      /* ROM bank at $8000     */
+        # A15 & A14 & !A13 & !A12 & A11;        /* /EXPCS1               */
+IN10    = E.dfb & !Q.dfb;
+HOLD    = IN10 & ( !MRDY
+                 # DUARTA & !W1
+                 # SLOWA & !W1 & !W0 );
+
+Q.d     = !E.dfb;
+E.d     = Q.dfb # HOLD;
+W0.d    = IN10 & (!W0 # W1);                /* count up to 3 in state 10;  */
+W1.d    = IN10 & (W1 # W0);                 /* cleared again before reuse  */
+
+Q.ckmux = OSC;
+E.ckmux = OSC;
+W0.ckmux = OSC;
+W1.ckmux = OSC;
+Q.ar    = 'b'0;
+E.ar    = 'b'0;
+W0.ar   = 'b'0;
+W1.ar   = 'b'0;
+Q.sp    = 'b'0;
+E.sp    = 'b'0;
+W0.sp   = 'b'0;
+W1.sp   = 'b'0;
+Q.oe    = 'b'1;
+E.oe    = 'b'1;
+
+/** Strobes: only while E is high **/
+RD      = E.dfb & RW;
+WR      = E.dfb & !RW;
+
+/** Address decoding **/
+ROMCS   = A15 & A14 & A13                     /* $E000-$FFFF            */
+        # A15 & !A14 & PG3;                     /* $8000-$BFFF, bank on   */
+DUARTCS = A15 & A14 & !A13 & !A12 & !A11;     /* $C000-$C7FF */
+EXPCS1  = A15 & A14 & !A13 & !A12 &  A11;     /* $C800-$CFFF */
+/* $D000-$D7FF: nothing selected                                        */
+/* $D800-$DFFF: MMU page registers, write only (A1..A0 pick the register) */
+MMUWR   = E.dfb & !RW & A15 & A14 & !A13 & A12 & A11;
+
+/*
+ * Page bit 4.  Each register loads D4 when Q falls during a write to its
+ * page register: data and address are stable by then, and an MRDY stretch
+ * (E high, Q low) gives no further edges.  The 74HC670s take bits 0-3 of
+ * the same write.
+ */
+PG0.d   = D4;
+PG1.d   = D4;
+PG2.d   = D4;
+PG3.d   = D4;
+PG0.ck  = E.dfb & !Q.dfb & !RW & A15 & A14 & !A13 & A12 & A11 & !A1 & !A0;
+PG1.ck  = E.dfb & !Q.dfb & !RW & A15 & A14 & !A13 & A12 & A11 & !A1 &  A0;
+PG2.ck  = E.dfb & !Q.dfb & !RW & A15 & A14 & !A13 & A12 & A11 &  A1 & !A0;
+PG3.ck  = E.dfb & !Q.dfb & !RW & A15 & A14 & !A13 & A12 & A11 &  A1 &  A0;
+PG0.ar  = 'b'0;
+PG1.ar  = 'b'0;
+PG2.ar  = 'b'0;
+PG3.ar  = 'b'0;
+PG0.sp  = 'b'0;
+PG1.sp  = 'b'0;
+PG2.sp  = 'b'0;
+PG3.sp  = 'b'0;
+
+MA18    = !A15 & !A14 & PG0
+        # !A15 &  A14 & PG1
+        #  A15 & !A14 & PG2
+        #  A15 &  A14 & PG3;
+RAMCS   = !A15                    /* $0000-$7FFF              */
+        # !A14 & !PG3;              /* $8000-$BFFF unless the ROM bank */
+
+
+RD.oe      = 'b'1;
+WR.oe      = 'b'1;
+ROMCS.oe   = 'b'1;
+DUARTCS.oe = 'b'1;
+EXPCS1.oe  = 'b'1;
+MA18.oe    = 'b'1;
+MMUWR.oe   = 'b'1;
+RAMCS.oe   = 'b'1;
