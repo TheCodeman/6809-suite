@@ -3,7 +3,7 @@ SHELL := /bin/bash
 LWASM := $(shell command -v lwasm)
 
 all: os.s19 os-rom.bin hello.s19 vdpdemo.s19 cpu6309.s19 basic.s19 basic-rom.s19 mini09-rom32.bin emu6809 \
-     hello.prg vdpdemo.prg cpu6309.prg basic.prg asm.prg link.prg edit.prg
+     hello.prg vdpdemo.prg cpu6309.prg basic.prg asm.prg link.prg edit.prg mc.prg
 
 schematic: hw/schematic.svg
 
@@ -73,6 +73,10 @@ link.s19: link.asm syscalls.inc vdp.inc
 edit.s19: edit.asm syscalls.inc vdp.inc
 	$(LWASM) --format=srec -o $@ edit.asm
 
+# MC, the two-panel file manager
+mc.s19: mc.asm syscalls.inc vdp.inc
+	$(LWASM) --format=srec -o $@ mc.asm
+
 emu6809: emu6809.c
 	gcc -O2 -Wall -o $@ $<
 
@@ -111,6 +115,10 @@ test-edit: all
 	printf 'EDIT T.TXT\n\033[B\033[FX\nnew line\023\030TYPE T.TXT\n' \
 		| ./emu6809 -v -k -d build-drive -f -t 3 os.s19 > /dev/null
 	@echo "--- build-drive/T.TXT after the edit:"; cat build-drive/T.TXT
+
+# MC: key presses on a scratch drive, checked against the screen they leave
+test-mc: all
+	python3 tools/mctest.py
 
 # ASM: assemble each file with ASM in the emulator and with lwasm, and
 # compare the program files byte for byte (asm.asm is ASM itself)
@@ -185,9 +193,9 @@ pcb: kicad-sch
 	kicad-cli pcb render --side top --rotate "-40,0,-25" --perspective --quality high \
 		--width 1600 --height 1000 -o hw/render-3d.png hw/mini09.kicad_pcb
 
-.PHONY: FORCE all run test test-6309 run-vdp test-vdp test-usb test-edit test-asm test-obj test-basic test-rombasic test-console schematic kicad-sch pcb pld clean
+.PHONY: FORCE all run test test-6309 run-vdp test-vdp test-usb test-edit test-mc test-asm test-obj test-basic test-rombasic test-console schematic kicad-sch pcb pld clean
 
 clean:
 	rm -f os.s19 os-rom.bin os.lst hello.s19 vdpdemo.s19 cpu6309.s19 basic.s19 basic-rom.s19 mini09-rom32.bin emu6809
-	rm -f hello.prg vdpdemo.prg cpu6309.prg basic.prg asm.s19 asm.prg link.s19 link.prg edit.s19 edit.prg
+	rm -f hello.prg vdpdemo.prg cpu6309.prg basic.prg asm.s19 asm.prg link.s19 link.prg edit.s19 edit.prg mc.s19 mc.prg
 	rm -rf build-drive .console
