@@ -763,6 +763,13 @@ How it works:
   shown as `/NAME`, names longer than the column end in `~`, and sizes over
   999,999,999 bytes are shown in K. Only what changes is redrawn: a cursor
   move rewrites two rows, a scroll the panel's rows.
+- **Frames:** drawn with the font's double lines, and a single line
+  between the name and size columns. The pico6809 font keeps its line
+  pieces at `$00-$15`, which the terminal takes as control codes, so MC
+  copies them over the block graphics at `$80-$95` when it starts and puts
+  those back when it quits (F10). Without the video card the frames are
+  `- | +`. A serial terminal on a `CONSOLE=both` build shows the frames as
+  bytes `$8x`.
 - **Sorting:** folders first, then files, each by name ignoring case. The
   drive returns entries in directory order, so MC sorts them as they
   arrive: a binary search finds each one's place in the index.

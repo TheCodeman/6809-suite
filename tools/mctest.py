@@ -9,6 +9,11 @@ Each case starts the emulator afresh, runs MC, types its keys and
 renders everything MC printed.  --show prints every final screen, with
 the reverse-video cells in a second copy of the screen (as #).
 
+MC draws its frames with the font's line pieces, copied to $80-$95 (as
+in the pico6809 font at $00-$15); the renderer shows them as the box
+characters they are.  The checks compare text with them folded back to
+- | + unless the text has a box character itself.
+
 The renderer knows only what MC sends: ESC [ r ; c H, ESC [ 2 J,
 ESC [ K, ESC [ 0 m, ESC [ 7 m, CR and LF.
 """
@@ -42,6 +47,10 @@ def bigfile():
     """A 1,000,000-byte file: three bufferfuls for MC's copy."""
     open(f"{DRIVE}/DEMOS/SUB/HUGE.BIN", "wb").write(bytes((i * 7 + i // 512) & 255 for i in range(1000000)))
 
+
+
+GLYPHS = "─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬"           # $80 + the font's code
+FOLD = str.maketrans("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬", "-|" + "+" * 9 + "-|" + "+" * 9)
 
 
 def render(out):
@@ -79,8 +88,8 @@ def render(out):
             c = 0
         elif ch == "\n":
             r = min(r + 1, ROWS - 1)
-        elif " " <= ch <= "~" and r < ROWS and c < COLS:
-            scr[r][c] = ch
+        elif (" " <= ch <= "~" or "\x80" <= ch < chr(0x80 + len(GLYPHS))) and r < ROWS and c < COLS:
+            scr[r][c] = GLYPHS[ord(ch) - 0x80] if ch >= "\x80" else ch
             rev[r][c] = "#" if inv else " "
             c += 1
     return ["".join(x).rstrip() for x in scr], ["".join(x).rstrip() for x in rev]
@@ -128,6 +137,10 @@ CASES = [
         (28, "+- 8 entries ---"),
         (29, " ALPHA"),
         (30, "1Help"), (30, "10Quit"),
+    ], ("L", 2)),
+    ("frames: the font's double lines", "MC", "", [
+        (1, "╔═ / ═══"), (1, "╗╔═ / ═"), (2, "║/ALPHA                      │    <DIR>║"),
+        (28, "╚═ 8 entries ═══"), (28, "═╝╚═"),
     ], ("L", 2)),
     ("down, into DEMOS", "MC", DOWN + ENTER, [
         (1, "+- /DEMOS ---"), (2, "|/..                         |     <UP>|"),
@@ -245,7 +258,8 @@ def main():
         if "check" in opt and not opt["check"]():
             errs.append("the drive isn't as it should be afterwards")
         for row, text in want:
-            if text not in scr[row - 1]:
+            line = scr[row - 1] if any(g in text for g in GLYPHS) else scr[row - 1].translate(FOLD)
+            if text not in line:
                 errs.append(f"row {row} has no {text!r}: {scr[row - 1]!r}")
         if bar:                                    # the cursor bar, and no other
             for side, x in (("L", 1), ("R", 41)):

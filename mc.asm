@@ -76,6 +76,19 @@ NAMEW       equ     28              ; name column
 SIZEW       equ     9               ; size column
 TAB         equ     $09
 
+; The frame characters (fch): where each is in the table
+F_H         equ     0               ; horizontal
+F_V         equ     1               ; vertical
+F_TL        equ     2               ; corners: top left, top right,
+F_TR        equ     3
+F_BL        equ     4               ; bottom left, bottom right
+F_BR        equ     5
+F_SEP       equ     6               ; between the name and the size
+NFCH        equ     7
+FONTA       equ     $F800           ; the font in VRAM ($1F800, 8 bytes a
+                                    ; glyph: VF_BANK is its bank too)
+NGLYPH      equ     $16             ; line pieces $00-$15 -> $80-$95
+
 ; Our file results, past the drive's (ferrtxt)
 ER_LONG     equ     $F0             ; a path over PATHMAX
 ER_NOTEMPTY equ     $F1             ; delete: a folder with things in it
@@ -143,6 +156,7 @@ st2:        ldu     #pl
             jsr     readdir
 st3:        ldu     #pr
             jsr     readdir
+            jsr     glyphs          ; line characters for the frames
             lda     #1
             sta     rdall
 
@@ -266,7 +280,58 @@ k_help:     ldx     #msg_help
 
 k_quit:     ldx     #msg_cls
             jsr     puts
+            jsr     noglyphs
             OS      SYS_EXIT
+
+; ---- the frame characters -------------------------------------------------
+; The pico6809 font has its line pieces at $00-$1F, which its terminal
+; can't print (it takes them as control codes).  So MC copies the ones it
+; uses to $80 + the same code, over the block graphics there, and puts
+; those back when it quits.  Without the video card (serial only) the
+; frames are drawn with - | + instead.  On a serial terminal fed from the
+; same console (CONSOLE=both) the frames come out as bytes $8x.
+glyphs:     ldx     #fascii         ; - | + until we know there's a card
+            bsr     setfch
+            ldx     #fsave          ; the glyphs we'll draw over
+            ldu     #FONTA+$80*8
+            ldd     #NGLYPH*8
+            jsr     vget
+            bcs     gl9             ; no video card
+            ldx     #fnew           ; the line pieces at $00 on
+            ldu     #FONTA
+            ldd     #NGLYPH*8
+            jsr     vget
+            ldx     #fnew           ; to $80 on
+            ldu     #FONTA+$80*8
+            ldd     #NGLYPH*8
+            jsr     vput
+            inc     gly
+            ldx     #fglyph
+            bra     setfch
+gl9:        rts
+
+; Put back the glyphs MC drew over
+noglyphs:   tst     gly
+            beq     gl9
+            ldx     #fsave
+            ldu     #FONTA+$80*8
+            ldd     #NGLYPH*8
+            jmp     vput
+
+; The frame characters from the table at X
+setfch:     ldu     #fch
+            ldb     #NFCH
+sf1:        lda     ,x+
+            sta     ,u+
+            decb
+            bne     sf1
+            rts
+
+; F_H, F_V, F_TL, F_TR, F_BL, F_BR, F_SEP: the font's codes + $80 for
+; double lines (the frame) and a single one (between name and size)
+fglyph:     fcb     $8B,$8C,$8D,$8E,$8F,$90,$81
+fascii:     fcc     "-|++++|"
+
 
 ; ^R: read the folder again, keeping the cursor on the same name
 k_reread:   clr     keepnm
@@ -1283,13 +1348,13 @@ drowe:      subd    P_TOP,u
             jmp     drow
 dre9:       rts
 
-; Row B (0 = the first) of panel U: | name | size |, the cursor's in reverse
+; Row B (0 = the first) of panel U: |name|size|, the cursor's in reverse
 drow:       pshs    b
             lda     ,s
             adda    #2
             ldb     P_X,u
             jsr     goto
-            lda     #'|
+            lda     fch+F_V
             jsr     putc
             clra
             ldb     ,s
@@ -1334,7 +1399,7 @@ dr3:        lda     ,x+
 dr4:        jsr     putsc
 dr5:        ldb     #NAMEW
             jsr     padto
-            lda     #'|
+            lda     fch+F_SEP
             jsr     putc
             pshs    u
             ldx     rowp            ; the size, or what the folder is
@@ -1373,11 +1438,11 @@ dr7:        puls    u
 dr8:        clr     ncol            ; an empty row
             ldb     #NAMEW
             jsr     padto
-            lda     #'|
+            lda     fch+F_SEP
             jsr     putc
             ldb     #SIZEW
             jsr     spaces
-dr9:        lda     #'|
+dr9:        lda     fch+F_V
             jsr     putc
             puls    b,pc
 
@@ -1385,8 +1450,10 @@ dr9:        lda     #'|
 dtop:       lda     #1
             ldb     P_X,u
             jsr     goto
-            ldx     #msg_tl         ; "+-"
-            jsr     puts
+            lda     fch+F_TL
+            jsr     putc
+            lda     fch+F_H
+            jsr     putc
             cmpu    act
             bne     dt1
             ldx     #msg_rev
@@ -1415,19 +1482,21 @@ dt2:        jsr     putsc
             ldb     ncol            ; dashes to the corner
             negb
             addb    #PW-5
-dt3:        lda     #'-
+dt3:        lda     fch+F_H
             jsr     putc
             decb
             bne     dt3
-            lda     #'+
+            lda     fch+F_TR
             jmp     putc
 
 ; Bottom border of panel U, with how many entries
 dbottom:    lda     #PROWS+2
             ldb     P_X,u
             jsr     goto
-            ldx     #msg_tl
-            jsr     puts
+            lda     fch+F_BL
+            jsr     putc
+            lda     fch+F_H
+            jsr     putc
             lda     #$20
             jsr     putc
             ldd     P_CNT,u
@@ -1446,11 +1515,11 @@ db1:        pshs    u
             ldb     ncol
             negb
             addb    #PW-4
-db2:        lda     #'-
+db2:        lda     fch+F_H
             jsr     putc
             decb
             bne     db2
-            lda     #'+
+            lda     fch+F_BR
             jmp     putc
 
 ; Row 29: the message, or the active panel's entry in full with its size
@@ -1825,7 +1894,6 @@ msg_rev:    fcb     ESC
             fcn     "[7m"
 msg_norm:   fcb     ESC
             fcn     "[0m"
-msg_tl:     fcn     "+-"
 msg_dots:   fcn     "..."
 msg_ents:   fcn     " entries "
 msg_sp2:    fcn     "  "
@@ -1915,6 +1983,8 @@ curnm       rmb     64              ; the entry being worked on
 pbuf        rmb     64              ; its path
 pbuf2       rmb     64              ; the path it is copied to
 msgbuf      rmb     160             ; a prompt or message being built
+fsave       rmb     NGLYPH*8        ; the font's glyphs $80-$95 before MC
+fnew        rmb     NGLYPH*8        ; the line pieces, $00-$15
 
 ; Variables, all 0 at the start
 mvars       equ     *
@@ -1955,6 +2025,8 @@ lastn       rmb     2               ; bytes the last read gave
 lastlen     rmb     2               ; length of the buffer's last block
 created     rmb     1               ; the copy's file has been made
 fnfall      rmb     2               ; findname: where to go if it's gone
+gly         rmb     1               ; the line glyphs are copied in
+fch         rmb     NFCH            ; the frame characters in use
 mvend       equ     *
 
             rmb     256             ; stack
