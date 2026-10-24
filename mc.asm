@@ -10,7 +10,9 @@
 ;  terminal with 30 rows.
 ;
 ;  Keys: Up, Down, PgUp, PgDn, Home, End move; Tab switches panels;
-;  Enter opens a folder (.. goes up); ^R reads the panel's folder again;
+;  Enter opens a folder (.. goes up); Insert or ^T marks; F5 copies and
+;  F6 moves the marked entries (or the one under the cursor) to the other
+;  panel's folder; F8 deletes them; ^R reads the panel's folder again;
 ;  ^L redraws; F1 help; F10 or ^X quits.  ESC then a digit is the same
 ;  as that function key (ESC 0 = F10), for keyboards without them.
 ;
@@ -34,13 +36,17 @@
 
 PAGEL       equ     $03             ; RAM page for the left panel's list
 PAGER       equ     $04             ; and for the right one's
+BUFPG       equ     $05             ; copy buffer: pages $05-$1F
+BUFBLK      equ     27*32           ; its 512-byte blocks (432K)
 PWIN        equ     $8000           ; the mapped page
 PIDX        equ     PWIN            ; index: 2 bytes per entry
 MAXENT      equ     512
 PREC        equ     PWIN+MAXENT*2   ; the entries
 PEND        equ     PWIN+$4000
 
-R_ATTR      equ     0               ; an entry: attribute ($10 = folder)
+R_ATTR      equ     0               ; an entry: attribute ($10 = folder,
+                                    ; M_MARK = marked)
+M_MARK      equ     $80
 R_SIZE      equ     1               ; size, 4 bytes
 R_NAME      equ     5               ; name, NUL-terminated
 
@@ -55,7 +61,8 @@ P_OLD       equ     72              ; 2: the selected entry when last drawn
 P_FREE      equ     74              ; 2: where the next entry goes
 P_RED       equ     76              ; redraw: RD_xxx bits
 P_FULL      equ     77              ; non-zero: the folder didn't all fit
-PSZ         equ     78
+P_NMARK     equ     78              ; 2: marked entries
+PSZ         equ     80
 PATHMAX     equ     63
 
 RD_CUR      equ     1               ; the old and new cursor rows
@@ -68,6 +75,12 @@ PW          equ     40              ; panel width, borders included
 NAMEW       equ     28              ; name column
 SIZEW       equ     9               ; size column
 TAB         equ     $09
+
+; Our file results, past the drive's (ferrtxt)
+ER_LONG     equ     $F0             ; a path over PATHMAX
+ER_NOTEMPTY equ     $F1             ; delete: a folder with things in it
+ER_FIRMWARE equ     $F2             ; a file over 432K needs FAPPEND
+ER_CANCEL   equ     $F3             ; ESC or ^C during a copy
 
 ; Key codes for VT100 sequences
 K_UP        equ     $80
@@ -182,6 +195,16 @@ mkeys:      fcb     K_UP
             fdb     k_redraw
             fcb     K_F1
             fdb     k_help
+            fcb     K_INS
+            fdb     k_mark
+            fcb     $14             ; ^T
+            fdb     k_mark
+            fcb     K_F1+4          ; F5
+            fdb     k_copy
+            fcb     K_F1+5          ; F6
+            fdb     k_move
+            fcb     K_F1+7          ; F8
+            fdb     k_delete
             fcb     K_F10
             fdb     k_quit
             fcb     $18             ; ^X
@@ -252,11 +275,14 @@ k_reread:   clr     keepnm
             ldd     P_CUR,u
             jsr     entry           ; X -> the entry
             leax    R_NAME,x
+            pshs    u
             ldu     #keepnm
             ldb     #PATHMAX
             jsr     cpyword0
-            ldu     act
-krr1:       jsr     readdir
+            puls    u
+krr1:       ldd     P_CUR,u         ; if it's gone, about where it was
+            std     fnfall
+            jsr     readdir
             bcs     krr9
             ldx     #keepnm
             jsr     findname
@@ -345,6 +371,8 @@ kp2:        pshs    x
 kp3:        clr     ,x
             jsr     readdir
             bcs     kp9
+            ldd     #0
+            std     fnfall
             ldx     #keepnm
             jsr     findname
 kp9:        rts
@@ -361,7 +389,8 @@ setmsg:     stx     msgp
             inc     rdinfo
             rts
 
-; Put the cursor on the entry named X (ignoring case), or on the first
+; Put the cursor on the entry named X (ignoring case), or if it's gone on
+; entry fnfall (or the last)
 findname:   ldd     #0
 fn1:        cmpd    P_CNT,u
             bhs     fn8
@@ -374,7 +403,12 @@ fn1:        cmpd    P_CNT,u
             beq     fn9
             addd    #1
             bra     fn1
-fn8:        ldd     #0
+fn8:        ldd     P_CNT,u
+            beq     fn9
+            subd    #1
+            cmpd    fnfall
+            bls     fn9
+            ldd     fnfall
 fn9:        std     P_CUR,u
             std     P_OLD,u
             ldd     P_CUR,u
@@ -401,6 +435,571 @@ stp8:       lda     P_RED,u
             sta     P_RED,u
 stp9:       rts
 
+; ---- marking ------------------------------------------------------------
+; Insert or ^T: mark or unmark the entry under the cursor, then move down
+k_mark:     ldd     P_CNT,u
+            beq     kmk9
+            ldb     P_PAGE,u
+            jsr     pmap
+            ldd     P_CUR,u
+            jsr     entry
+            jsr     isup            ; .. can't be marked
+            beq     kmk1
+            lda     R_ATTR,x
+            eora    #M_MARK
+            sta     R_ATTR,x
+            pshs    a
+            ldd     P_NMARK,u
+            addd    #1
+            tst     ,s+
+            bmi     kmk0
+            subd    #2
+kmk0:       std     P_NMARK,u
+kmk1:       lda     P_RED,u         ; its row, even at the last entry
+            ora     #RD_CUR
+            sta     P_RED,u
+            inc     rdinfo
+            jmp     k_down
+kmk9:       rts
+
+; Is entry X ..?  Z=1 if it is.
+isup:       lda     R_NAME,x
+            cmpa    #'.
+            bne     iu9
+            lda     R_NAME+1,x
+            cmpa    #'.
+            bne     iu9
+            tst     R_NAME+2,x
+iu9:        rts
+
+; ---- copy, move, delete -------------------------------------------------
+; They work on the selection of panel opan: the marked entries, or the
+; one under the cursor if none is marked.  An error stops the operation
+; with a message (operr); either way both panels are read again after.
+
+; F8: delete the selection.  A folder must be empty (the drive's delete
+; won't remove one that isn't).
+k_delete:   sts     opsp
+            stu     opan
+            ldx     #msg_vdel
+            jsr     opstart
+            bcs     kd9
+            ldu     mbend
+            ldx     #msg_yn
+            jsr     app
+            jsr     askkey
+            cmpa    #'Y
+            bne     kd9
+            ldd     #0
+            std     sidx
+kd1:        ldu     opan
+            jsr     selnext
+            bcs     kd8
+            ldx     opan            ; (P_PATH is 0)
+            ldy     #curnm
+            ldu     #pbuf
+            jsr     mkpath
+            lbcs    toolong
+            ldx     #pbuf
+            jsr     setvname
+            lda     #VCMD_FDELETE
+            jsr     fcmd
+            lbcs    operr
+            bra     kd1
+kd8:        jmp     opdone
+kd9:        rts
+
+; F5: copy the selection to the other panel's folder.  F6: move it there
+; (copy, then delete the original).  Files only: the drive has no command
+; to make a folder, so folders are skipped and counted.
+k_copy:     clr     opmove
+            bra     kc0
+k_move:     lda     #1
+            sta     opmove
+kc0:        sts     opsp
+            stu     opan
+            jsr     other
+            stx     dpan
+            ldx     opan            ; the same folder?
+            ldy     dpan
+            jsr     namecmp
+            bne     kc1
+            ldx     #msg_same
+            jmp     setmsg
+kc1:        ldx     #msg_vcopy
+            tst     opmove
+            beq     kc2
+            ldx     #msg_vmove
+kc2:        jsr     opstart
+            lbcs    kc9
+            ldu     mbend
+            ldx     #msg_to
+            jsr     app
+            ldx     dpan
+            jsr     app
+            ldx     #msg_yn
+            jsr     app
+            jsr     askkey
+            cmpa    #'Y
+            lbne    kc9
+            clr     ovall
+            clr     nskip
+            ldd     #0
+            std     sidx
+kc3:        ldu     opan
+            jsr     selnext
+            bcs     kc8
+            tst     curat
+            beq     kc4
+            inc     nskip           ; a folder
+            bra     kc3
+kc4:        ldx     opan
+            ldy     #curnm
+            ldu     #pbuf
+            jsr     mkpath
+            bcs     toolong
+            ldx     dpan
+            ldy     #curnm
+            ldu     #pbuf2
+            jsr     mkpath
+            bcs     toolong
+            jsr     copyfile        ; C=1: not copied (not overwritten)
+            bcs     kc3
+            tst     opmove
+            beq     kc3
+            ldx     #pbuf           ; moved: the original goes
+            jsr     setvname
+            lda     #VCMD_FDELETE
+            jsr     fcmd
+            lbcs    operr
+            bra     kc3
+kc8:        tst     nskip
+            beq     kc81
+            ldx     #msg_skipdir
+            jsr     setmsg
+kc81:       jmp     opdone
+kc9:        rts
+toolong:    lda     #ER_LONG
+            ; fall into operr
+
+; A file operation failed with result A on curnm: back to the main loop
+; with " name: what went wrong" on row 29, after reading both panels again.
+operr:      lds     opsp
+            pshs    a
+            lda     #VCMD_FCLOSE    ; whatever is open
+            jsr     fcmd
+            puls    a
+            tst     created         ; a copy that stopped: delete the part
+            beq     oe0
+            pshs    a
+            ldx     #pbuf2
+            jsr     setvname
+            lda     #VCMD_FDELETE
+            jsr     fcmd
+            clr     created
+            puls    a
+            bra     oe1
+oe0:        ldb     curat           ; a folder that won't go is not empty
+            beq     oe1
+            cmpa    #7
+            bne     oe1
+            lda     #ER_NOTEMPTY
+oe1:        jsr     ferrtxt
+            pshs    x
+            ldu     #msgbuf
+            lda     #$20
+            sta     ,u+
+            ldx     #curnm
+            jsr     app
+            lda     #':
+            sta     ,u+
+            puls    x
+            jsr     app
+            ldx     #msgbuf
+            jsr     setmsg
+            ; fall into opdone
+
+; Read both panels again, the cursors staying on the same names
+opdone:     ldu     #pl
+            jsr     k_reread
+            ldu     #pr
+            jmp     k_reread
+
+; Start an operation on the selection of panel opan: msgbuf <- " " X and
+; the one name or "n entries", mbend -> its end.  C=1 (with a message) if
+; nothing is selected.
+opstart:    pshs    x
+            ldu     opan
+            jsr     selcount
+            std     nsel
+            puls    x
+            bne     ops1
+            ldx     #msg_nosel
+            jsr     setmsg
+            orcc    #$01
+            rts
+ops1:       ldu     #msgbuf
+            lda     #$20
+            sta     ,u+
+            jsr     app
+            ldd     nsel
+            cmpd    #1
+            bne     ops2
+            pshs    u
+            ldd     #0
+            std     sidx
+            ldu     opan
+            jsr     selnext         ; its name
+            puls    u
+            ldx     #curnm
+            jsr     app
+            bra     ops3
+ops2:       jsr     utoa16
+            leau    -1,u
+            ldx     #msg_nents
+            jsr     app
+ops3:       stu     mbend
+            andcc   #$FE
+            rts
+
+; How many entries of panel U are selected -> D (Z=1 if none)
+selcount:   ldd     P_NMARK,u
+            bne     sc9
+            ldd     P_CNT,u
+            beq     sc9
+            ldb     P_PAGE,u
+            jsr     pmap
+            ldd     P_CUR,u
+            jsr     entry
+            jsr     isup
+            beq     sc8
+            ldd     #1
+            rts
+sc8:        ldd     #0
+sc9:        rts
+
+; The next selected entry of panel U from entry sidx on: its name to
+; curnm, $10 in curat if it is a folder; sidx moves past it.  C=1 when
+; there are no more.
+selnext:    ldb     P_PAGE,u
+            jsr     pmap
+sn1:        ldd     sidx
+            cmpd    P_CNT,u
+            bhs     sn8
+            addd    #1
+            std     sidx
+            subd    #1
+            ldy     P_NMARK,u
+            bne     sn2
+            cmpd    P_CUR,u         ; no marks: the cursor's entry
+            bne     sn1
+            jsr     entry
+            jsr     isup
+            beq     sn8
+            bra     sn3
+sn2:        jsr     entry           ; marks: each marked one
+            lda     R_ATTR,x
+            bpl     sn1
+sn3:        lda     R_ATTR,x
+            anda    #$10
+            sta     curat
+            leax    R_NAME,x
+            pshs    u
+            ldu     #curnm
+            ldb     #PATHMAX
+            jsr     cpyword0
+            puls    u
+            andcc   #$FE
+            rts
+sn8:        orcc    #$01
+            rts
+
+; Copy file pbuf to pbuf2 (curnm is its name).  If pbuf2 is there already
+; it asks first; C=1 if the answer was no.  The file goes through RAM
+; pages BUFPG on, BUFBLK blocks of 512 at a time: the drive has one file
+; open at a time and can't seek, so a file bigger than that is read again
+; from the start for each round, skipping what is done, and the rounds
+; after the first are appended (FAPPEND).
+copyfile:   tst     ovall
+            bne     cf1
+            ldx     #pbuf2          ; there already?
+            jsr     setvname
+            lda     #VCMD_FOPEN
+            jsr     fcmd
+            pshs    cc
+            lda     #VCMD_FCLOSE
+            jsr     fcmd
+            puls    cc
+            bcs     cf1             ; no
+            ldu     #msgbuf
+            ldx     #msg_over
+            jsr     app
+            ldx     #curnm
+            jsr     app
+            ldx     #msg_yna
+            jsr     app
+            jsr     askkey
+            cmpa    #'A
+            bne     cf0
+            sta     ovall           ; all: don't ask again
+            bra     cf1
+cf0:        cmpa    #'Y
+            beq     cf1
+            orcc    #$01
+            rts
+cf1:        clr     created
+            ldu     #msgbuf         ; " Copying name" while it works
+            ldx     #msg_copying
+            jsr     app
+            ldx     #curnm
+            jsr     app
+            ldx     #msgbuf
+            jsr     showrow
+            clr     rounds
+cf2:        ldx     #pbuf           ; read a bufferful
+            jsr     setvname
+            lda     #VCMD_FOPEN
+            jsr     fcmd
+            lbcs    operr
+            ldx     #zero2          ; VF_LEN = 0: whole blocks
+            ldu     #VF_LEN
+            ldd     #2
+            jsr     vput
+            lda     rounds          ; skip what earlier rounds copied
+            sta     cnt8
+cf3:        tst     cnt8
+            beq     cf5
+            ldd     #BUFBLK
+            std     nblk
+cf4:        jsr     chkabort
+            lda     #VCMD_FREAD
+            jsr     fcmd
+            lbcs    operr
+            ldd     nblk
+            subd    #1
+            std     nblk
+            bne     cf4
+            dec     cnt8
+            bra     cf3
+cf5:        ldd     #0
+            std     nblk
+            clr     ceof
+cf6:        jsr     chkabort
+            lda     #VCMD_FREAD
+            jsr     fcmd
+            lbcs    operr
+            stx     lastn
+            beq     cf7e            ; the end: nothing in this block
+            ldd     nblk
+            jsr     blkaddr
+            ldu     #VF_DATA
+            ldd     lastn
+            std     lastlen
+            jsr     vget
+            ldd     nblk
+            addd    #1
+            std     nblk
+            ldd     lastn
+            cmpd    #512
+            blo     cf7e            ; a short block ends it
+            ldd     nblk
+            cmpd    #BUFBLK
+            blo     cf6
+            bra     cf7             ; the buffer is full, more to come
+cf7e:       inc     ceof
+cf7:        lda     #VCMD_FCLOSE
+            jsr     fcmd
+            ldx     #pbuf2          ; write it: a new file, or appended
+            jsr     setvname
+            lda     #VCMD_FCREATE
+            tst     rounds
+            beq     cf8
+            jsr     hasappend
+            lbcs    operr
+            lda     #VCMD_FAPPEND
+cf8:        jsr     fcmd
+            lbcs    operr
+            lda     #1
+            sta     created         ; a cancel deletes what's written
+            ldd     #0
+            std     wblk
+cf9:        ldd     wblk
+            cmpd    nblk
+            bhs     cf11
+            addd    #1              ; the last block may be short
+            cmpd    nblk
+            beq     cf91
+            ldd     #512
+            bra     cf10
+cf91:       ldd     lastlen
+cf10:       std     wlen
+            jsr     chkabort
+            ldd     wblk
+            jsr     blkaddr
+            ldu     #VF_DATA
+            ldd     wlen
+            jsr     vput
+            ldx     #wlen           ; VF_LEN (both big-endian)
+            ldu     #VF_LEN
+            ldd     #2
+            jsr     vput
+            lda     #VCMD_FWRITE
+            jsr     fcmd
+            lbcs    operr
+            cmpx    wlen
+            beq     cf105
+            lda     #7              ; a short write: the disk is full
+            lbra    operr
+cf105:      ldd     wblk
+            addd    #1
+            std     wblk
+            bra     cf9
+cf11:       lda     #VCMD_FCLOSE
+            jsr     fcmd
+            lbcs    operr
+            tst     ceof
+            bne     cf12
+            inc     rounds
+            lbra    cf2
+cf12:       clr     created
+            andcc   #$FE
+            rts
+
+; ESC or ^C typed?  Then stop the copy.  Other keys are dropped.
+chkabort:   OS      SYS_POLL
+            bcs     ca9
+            cmpa    #ESC
+            beq     ca8
+            cmpa    #3
+            bne     chkabort
+ca8:        lda     #ER_CANCEL
+            jmp     operr
+ca9:        rts
+
+; Block D of the copy buffer: its page mapped, X -> it in the window
+blkaddr:    pshs    d
+            lsra                    ; / 32 blocks a page
+            rorb
+            lsra
+            rorb
+            lsra
+            rorb
+            lsra
+            rorb
+            lsra
+            rorb
+            addb    #BUFPG
+            jsr     pmap
+            puls    d
+            andb    #31             ; * 512
+            lslb
+            tfr     b,a
+            clrb
+            addd    #PWIN
+            tfr     d,x
+            rts
+
+; Does the firmware have FAPPEND?  C=1 and A = ER_FIRMWARE if not.  It sets
+; bit 0 of VF_CAPS after each command if it has (README, "Files").
+hasappend:  lda     caps            ; 0 not asked yet, 1 yes, 2 no
+            bne     ha1
+            ldx     #zero2
+            ldu     #VF_CAPS
+            ldd     #1
+            jsr     vput
+            lda     #VCMD_FCLOSE
+            jsr     fcmd
+            ldx     #capsb
+            ldu     #VF_CAPS
+            ldd     #1
+            jsr     vget
+            lda     #2
+            ldb     capsb
+            andb    #1
+            beq     ha0
+            lda     #1
+ha0:        sta     caps
+ha1:        cmpa    #1
+            bne     ha8
+            andcc   #$FE
+            rts
+ha8:        lda     #ER_FIRMWARE
+            orcc    #$01
+            rts
+
+; Path X / name Y -> U ("name" alone at the root).  C=1 if it would be
+; longer than PATHMAX.
+mkpath:     pshs    x,y
+            jsr     strlen          ; the folder's length
+            tstb
+            beq     mp1
+            incb                    ; and the /
+mp1:        pshs    b
+            tfr     y,x
+            jsr     strlen
+            addb    ,s+
+            bcs     mp9
+            cmpb    #PATHMAX
+            bhi     mp9
+            puls    x,y
+            tst     ,x
+            beq     mp2
+            jsr     app
+            lda     #'/
+            sta     ,u+
+mp2:        tfr     y,x
+            jsr     app
+            andcc   #$FE
+            rts
+mp9:        puls    x,y
+            orcc    #$01
+            rts
+
+; The string X to the mailbox's VF_NAME
+setvname:   jsr     strlen
+            incb
+            clra
+            ldu     #VF_NAME
+            jmp     vput
+
+; Append string X at U: U -> its NUL
+app:        lda     ,x+
+            sta     ,u+
+            bne     app
+            leau    -1,u
+            rts
+
+; msgbuf on row 29 in reverse, then wait for a key -> A, in capitals
+askkey:     ldx     #msgbuf
+            bsr     showrow
+            jsr     getkey
+            jmp     upper
+
+; String X on row 29, in reverse, at most 78 characters
+showrow:    pshs    x
+            lda     #ROWS-1
+            ldb     #1
+            jsr     goto
+            ldx     #msg_eeol
+            jsr     puts
+            ldx     #msg_rev
+            jsr     puts
+            puls    x
+            jsr     putsl
+            ldx     #msg_norm
+            jsr     puts
+            inc     rdinfo
+            rts
+
+; String X, at most 78 characters of it
+putsl:      ldb     #78
+psl1:       lda     ,x+
+            beq     psl9
+            jsr     putc
+            decb
+            bne     psl1
+psl9:       rts
+
 ; ---- reading a folder ---------------------------------------------------
 ; Read panel U's folder into its page, sorted.  C=1 with a message set if
 ; it can't be read: the panel is then empty (just .. outside the root).
@@ -411,6 +1010,7 @@ readdir:    ldb     P_PAGE,u
             std     P_TOP,u
             std     P_CUR,u
             std     P_OLD,u
+            std     P_NMARK,u
             clr     P_FULL,u
             lda     #RD_ROWS+RD_FRAME
             ora     P_RED,u
@@ -706,8 +1306,12 @@ drow:       pshs    b
 dr1:        ldd     rowent
             jsr     entry
             stx     rowp
-            clr     ncol            ; the name: /folder or file
+            clr     ncol            ; the name: *marked, /folder or file
             lda     R_ATTR,x
+            bpl     dr11
+            lda     #'*
+            jsr     putcc
+dr11:       lda     R_ATTR,x
             bita    #$10
             beq     dr2
             lda     #'/
@@ -857,11 +1461,23 @@ dinfo:      lda     #ROWS-1
             jsr     puts
             ldx     msgp
             beq     di1
-            jmp     puts
+            jmp     putsl
 di1:        ldu     act
             ldd     P_CNT,u
             beq     di9
-            ldb     P_PAGE,u
+            ldd     P_NMARK,u       ; " n marked |" first if there are marks
+            beq     di11
+            pshs    u
+            ldu     #nbuf
+            jsr     utoa16
+            puls    u
+            lda     #$20
+            jsr     putc
+            ldx     #nbuf
+            jsr     puts
+            ldx     #msg_marked
+            jsr     puts
+di11:       ldb     P_PAGE,u
             jsr     pmap
             ldd     P_CUR,u
             jsr     entry
@@ -869,7 +1485,7 @@ di1:        ldu     act
             lda     #$20
             jsr     putc
             leax    R_NAME,x
-            ldb     #60             ; leave room for the size
+            ldb     #46             ; leave room for the marks and size
 di2:        lda     ,x+
             beq     di3
             jsr     putc
@@ -1105,7 +1721,23 @@ tildekeys:  fcb     1,K_HOME,7,K_HOME,4,K_END,8,K_END
 
 ; ---- files ----------------------------------------------------------------
 ; The message for file result A -> msgp
-ferrmsg:    ldx     #msg_fnodrv
+ferrmsg:    bsr     ferrtxt
+            jmp     setmsg
+
+; The text for file result A -> X
+ferrtxt:    ldx     #msg_long
+            cmpa    #ER_LONG
+            beq     fe9
+            ldx     #msg_notempty
+            cmpa    #ER_NOTEMPTY
+            beq     fe9
+            ldx     #msg_firmware
+            cmpa    #ER_FIRMWARE
+            beq     fe9
+            ldx     #msg_cancel
+            cmpa    #ER_CANCEL
+            beq     fe9
+            ldx     #msg_fnodrv
             cmpa    #FR_NOTREADY
             beq     fe9
             ldx     #msg_fnofile
@@ -1121,7 +1753,7 @@ ferrmsg:    ldx     #msg_fnodrv
             cmpa    #13
             beq     fe9
             ldx     #msg_ferr
-fe9:        jmp     setmsg
+fe9:        rts
 
 ; VRAM mailbox: vput copies D bytes from X to VRAM U, vget from VRAM U to X
 vput:       bsr     vblock
@@ -1242,10 +1874,10 @@ msg_fkeys:  fcc     "1"
             fcc     "[7mQuit "
             fcb     ESC
             fcn     "[0m"
-msg_help:   fcn     " Arrows PgUp PgDn Home End move  Tab panel  Enter open  ^R reread  ^L redraw"
+msg_help:   fcn     " Ins mark  F5 copy  F6 move  F8 delete  Tab panel  Enter open  ^R reread"
 msg_notyet: fcn     " Not in this version of MC yet"
 msg_nofile: fcn     " Enter opens folders; files come in a later version"
-msg_long:   fcn     " Folder name too long (63 characters at most)"
+msg_long:   fcn     " Name too long (63 characters at most with its folder)"
 msg_full:   fcn     " Folder too big: some entries are not shown"
 msg_fnodrv: fcn     " No flash drive"
 msg_fnofile: fcn    " File not found"
@@ -1253,6 +1885,23 @@ msg_fnopath: fcn    " Folder not found"
 msg_fdenied: fcn    " Access denied or disk full"
 msg_fnofat: fcn     " Not a FAT16/FAT32 drive"
 msg_ferr:   fcn     " Drive error"
+msg_notempty: fcn   " Folder not empty"
+msg_firmware: fcn   " Over 432K: needs pico6809 firmware with FAPPEND"
+msg_cancel: fcn     " Cancelled"
+msg_marked: fcn     " marked |"
+msg_vdel:   fcn     "Delete "
+msg_vcopy:  fcn     "Copy "
+msg_vmove:  fcn     "Move "
+msg_nents:  fcn     " entries"
+msg_to:     fcn     " to /"
+msg_yn:     fcn     "? (Y/N)"
+msg_over:   fcn     " Overwrite "
+msg_yna:    fcn     "? (Y/N, A = all)"
+msg_copying: fcn    " ESC cancels. Copying "
+msg_same:   fcn     " Both panels show the same folder"
+msg_nosel:  fcn     " Nothing selected"
+msg_skipdir: fcn    " Folders skipped: the drive can't make folders yet"
+zero2:      fdb     0
 
 ; ======================================================================
 ;  RAM (not part of the program file)
@@ -1262,6 +1911,10 @@ mbox        rmb     72              ; a copy of VF_NAME..VF_ATTR
 keepnm      rmb     64              ; the name to put the cursor back on
 oldpath     rmb     64              ; a panel's folder before Enter
 nbuf        rmb     16              ; a number as text
+curnm       rmb     64              ; the entry being worked on
+pbuf        rmb     64              ; its path
+pbuf2       rmb     64              ; the path it is copied to
+msgbuf      rmb     160             ; a prompt or message being built
 
 ; Variables, all 0 at the start
 mvars       equ     *
@@ -1280,6 +1933,28 @@ mid         rmb     2
 rowent      rmb     2               ; drow: the entry
 rowp        rmb     2               ; drow, dinfo: -> the entry
 n32         rmb     4               ; utoa32's number
+opan        rmb     2               ; copy, move, delete: the panel
+dpan        rmb     2               ; the other panel
+opsp        rmb     2               ; S to go back to on an error
+sidx        rmb     2               ; selnext: the next entry to look at
+nsel        rmb     2               ; entries selected
+mbend       rmb     2               ; -> the end of msgbuf
+opmove      rmb     1               ; non-zero: move, not copy
+ovall       rmb     1               ; overwrite without asking
+nskip       rmb     1               ; folders skipped
+curat       rmb     1               ; $10 if curnm is a folder
+rounds      rmb     1               ; bufferfuls of the file done
+cnt8        rmb     1
+ceof        rmb     1               ; the file's end is in the buffer
+caps        rmb     1               ; FAPPEND: 0 not asked, 1 yes, 2 no
+capsb       rmb     1
+nblk        rmb     2               ; blocks in the buffer
+wblk        rmb     2               ; the block being written
+wlen        rmb     2               ; its length
+lastn       rmb     2               ; bytes the last read gave
+lastlen     rmb     2               ; length of the buffer's last block
+created     rmb     1               ; the copy's file has been made
+fnfall      rmb     2               ; findname: where to go if it's gone
 mvend       equ     *
 
             rmb     256             ; stack

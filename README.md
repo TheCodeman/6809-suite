@@ -734,7 +734,7 @@ root of the drive as `MC.PRG`, then type `MC`, or `MC folder` to start
 the left panel in that folder. It draws with the same VT100 subset as
 `EDIT`, so it needs 30 rows on a serial terminal too.
 
-This first version browses; copying, deleting, viewing and editing come
+It browses, marks, copies, moves and deletes; viewing and editing come
 next (the F-key bar already names them, and pressing one says it isn't
 there yet).
 
@@ -743,6 +743,11 @@ there yet).
 | Up, Down, PgUp, PgDn, Home, End | move the cursor in the active panel |
 | Tab | switch panels |
 | Enter | open the folder under the cursor; `..` goes up, with the cursor on the folder you left |
+| Insert or ^T | mark or unmark the entry under the cursor and move down; marked entries show a `*` |
+| F5 | copy the marked entries (or the one under the cursor) to the other panel's folder |
+| F6 | move them there: copy, then delete the original |
+| F8 | delete them (a folder only if it is empty) |
+| ESC or ^C while copying | cancel; the part-written copy is deleted |
 | ^R | read the panel's folder again |
 | ^L | redraw the screen |
 | F1 | the keys, on the message row |
@@ -761,6 +766,21 @@ How it works:
 - **Sorting:** folders first, then files, each by name ignoring case. The
   drive returns entries in directory order, so MC sorts them as they
   arrive: a binary search finds each one's place in the index.
+- **Copy, move, delete:** each asks first on row 29 (`Copy 3 entries to
+  /DEMOS? (Y/N)`), and asks again before replacing a file that is there
+  already (Y, N, or A for all the rest). Files only: the drive has no
+  command to make a folder (or to rename), so F5 and F6 skip folders and
+  say so, and F6 is a copy and a delete. An error stops the operation with
+  the file's name and what went wrong; either way both panels are read
+  again afterwards.
+- **Copying:** the drive has one file open at a time and can't seek, so a
+  file is read into RAM pages `$05` to `$1F` (432K) and then written out.
+  A bigger file takes several rounds: each opens the source again, skips
+  what is done, and appends to the copy with `FAPPEND`. That needs the
+  pico6809 firmware from 2026-10-21 on; with older firmware a file over
+  432K is refused (`Over 432K: needs pico6809 firmware with FAPPEND`) and
+  the part copied is deleted. The copy buffer overwrites EDIT's clipboard
+  in page `$1E`.
 - **Memory:** each panel's list is in a RAM page of its own, `$03` for the
   left and `$04` for the right, mapped at `$8000-$BFFF` while it is read
   or drawn. The page holds an index of 2-byte pointers at `$8000` and the
@@ -772,7 +792,9 @@ How it works:
 `make test-mc` makes a scratch drive (folders, a folder of 40 files, a long
 name, a sparse 1.5 GB file), types keys at MC in the emulator and checks
 the screen it leaves with `tools/mctest.py`, which renders MC's output as
-an 80x30 terminal would.
+an 80x30 terminal would, and for copy, move and delete what is on the drive
+afterwards: a 1,000,000-byte file copied in three rounds must match byte
+for byte, and with `-o` (old firmware) it must be refused.
 
 ## MINI09 BASIC
 
