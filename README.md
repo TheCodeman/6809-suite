@@ -10,6 +10,8 @@ run it without hardware.
 |------|------------|
 | `os.asm` | Kernel, user library, shell, demo tasks, vectors |
 | `edit.asm` | EDIT, the full-screen text editor: `EDIT.PRG` on the drive, which the shell's `EDIT` command runs |
+| `mc.asm` | MC, a two-panel file manager after Midnight Commander: `MC.PRG` on the drive, run by typing `MC` |
+| `tools/mctest.py` | Types keys at MC in the emulator and checks the screen it leaves (`make test-mc`) |
 | `edit-screenshot.png` | `EDIT` on the HDMI screen (in the README) |
 | `syscalls.inc` | System-call numbers and the `OS` macro, shared with user programs |
 | `hello.asm` | Example user program, loaded at runtime with `L` or from the drive as `HELLO.PRG` |
@@ -723,6 +725,54 @@ How it works:
   Background tasks that print will mess up the screen; ^L redraws it.
 
 `make test-edit` copies `EDIT.PRG` and a file to a scratch drive, edits the file and shows the result.
+
+## MC
+
+`mc.asm` is MC, a file manager after Midnight Commander: two panels side
+by side, each listing a folder of the flash drive. Copy `mc.prg` to the
+root of the drive as `MC.PRG`, then type `MC`, or `MC folder` to start
+the left panel in that folder. It draws with the same VT100 subset as
+`EDIT`, so it needs 30 rows on a serial terminal too.
+
+This first version browses; copying, deleting, viewing and editing come
+next (the F-key bar already names them, and pressing one says it isn't
+there yet).
+
+| Key | Does |
+|-----|------|
+| Up, Down, PgUp, PgDn, Home, End | move the cursor in the active panel |
+| Tab | switch panels |
+| Enter | open the folder under the cursor; `..` goes up, with the cursor on the folder you left |
+| ^R | read the panel's folder again |
+| ^L | redraw the screen |
+| F1 | the keys, on the message row |
+| F10 or ^X | quit |
+| ESC, then a digit | the same as that function key (ESC 0 is F10), for keyboards and terminals without them |
+
+How it works:
+
+- **Screen:** row 1 has the panels' top borders with their folders (the
+  active one in reverse), rows 2 to 27 the entries, row 28 the bottom
+  borders with the entry counts, row 29 the selected entry's full name and
+  exact size (or a message), and row 30 the function keys. Folders are
+  shown as `/NAME`, names longer than the column end in `~`, and sizes over
+  999,999,999 bytes are shown in K. Only what changes is redrawn: a cursor
+  move rewrites two rows, a scroll the panel's rows.
+- **Sorting:** folders first, then files, each by name ignoring case. The
+  drive returns entries in directory order, so MC sorts them as they
+  arrive: a binary search finds each one's place in the index.
+- **Memory:** each panel's list is in a RAM page of its own, `$03` for the
+  left and `$04` for the right, mapped at `$8000-$BFFF` while it is read
+  or drawn. The page holds an index of 2-byte pointers at `$8000` and the
+  entries from `$8400` (attribute, 4-byte size, name). That is up to 512
+  entries, or fewer with long names; a folder with more shows the first
+  ones it read and says `Folder too big`. `EDIT` and other programs use
+  those pages too, but MC reads both folders again each time it starts.
+
+`make test-mc` makes a scratch drive (folders, a folder of 40 files, a long
+name, a sparse 1.5 GB file), types keys at MC in the emulator and checks
+the screen it leaves with `tools/mctest.py`, which renders MC's output as
+an 80x30 terminal would.
 
 ## MINI09 BASIC
 
